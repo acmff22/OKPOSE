@@ -1,28 +1,3 @@
-# Copyright 2018 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     https://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# =============================================================================
-"""KeypointNet!!
-
-A reimplementation of 'Discovery of Latent 3D Keypoints via End-to-end
-Geometric Reasoning' keypoint network. Given a single 2D image of a known class,
-this network can predict a set of 3D keypoints that are consistent across
-viewing angles of the same object and across object instances. These keypoints
-and their detectors are discovered and learned automatically without
-keypoint location supervision.
-"""
-#用于训练无背景的物体图像
-
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -35,7 +10,6 @@ from scipy import misc
 import sys
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
-from tensorflow.contrib.slim.nets import resnet_v2
 import utils
 
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
@@ -130,15 +104,12 @@ def create_input_fn(split, batch_size):
           })
 
       fs["img0"] = tf.math.divide(tf.cast(tf.image.decode_png(fs["img0"], 4),dtype=tf.float32) ,255)
-      #tf.div(tf.to_float(tf.image.decode_png(fs["img0"], 4)), 255)
       fs["img1"] = tf.math.divide(tf.cast(tf.image.decode_png(fs["img1"], 4),dtype=tf.float32) ,255)
-      #tf.div(tf.to_float(tf.image.decode_png(fs["img1"], 4)), 255)
 
       fs["img0"].set_shape([vh, vw, 4])
       fs["img1"].set_shape([vh, vw, 4])
 
-      # fs["lr0"] = [fs["mv0"][0]]
-      # fs["lr1"] = [fs["mv1"][0]]
+
 
       fs["lr0"] = tf.convert_to_tensor([fs["mv0"][0]])
       fs["lr1"] = tf.convert_to_tensor([fs["mv1"][0]])
@@ -157,7 +128,7 @@ def create_input_fn(split, batch_size):
     dataset = dataset.prefetch(buffer_size=256)
 
     return tf.compat.v1.data.make_one_shot_iterator(dataset).get_next(), None
-    #dataset.make_one_shot_iterator().get_next(), None
+
     
 
   return input_fn
@@ -335,8 +306,6 @@ def separation_loss(xyz, delta):
   # -> [batch, num_kp ^ 2],
   lensqr = tf.reduce_sum(diffsq, axis=2)
 
-  #分离损失在计算关键点间距离（Xi-Xj）时，计算了自身的（Xi与Xi）距离，导致损失函数一直为delta，因此将自身值计算的损失乘0，不计入分离损失。
-  #自身计算得到损失在数组中位置j为 j=i*num_kp+i, i in range(num_kp)
   v=tf.constant([0,1,1,1,1,1,1,1,1,1,
                  1,0,1,1,1,1,1,1,1,1,
                  1,1,0,1,1,1,1,1,1,1,
@@ -351,7 +320,6 @@ def separation_loss(xyz, delta):
 
   return (tf.reduce_sum(tf.maximum(tf.multiply((-lensqr + delta),tf.cast(v,dtype=tf.float32)), 0.0)) / tf.cast(
     FLAGS.batch_size,dtype=tf.float32)) # num_kp *      * (num_kp-1)
-  #tf.to_float(num_kp * FLAGS.batch_size * 2))
 
 
 def consistency_loss(uv0, uv1, pconf):
@@ -442,39 +410,6 @@ def dilated_cnn(images, num_filters, is_training):
       net = slim.conv2d(net, num_filters, [3, 3], rate=r, scope="dconv%d" % i)
 
   return net
-
-
-def orientation_network(images, num_filters, is_training):
-  """Constructs a network that infers the orientation of an object.
-
-  Args:
-    images: [batch, h, w, 3] Input RGB images.
-    num_filters: The number of filters for all layers.
-    is_training: True if this function is called during training.
-
-  Returns:
-    Output of the orientation network.
-  """
-
-  with  tf.compat.v1.variable_scope("OrientationNetwork"): #tf.variable_scope("OrientationNetwork"):
-    net = dilated_cnn(images, num_filters, is_training)
-
-    modules = 2
-    prob = slim.conv2d(net, 2, [3, 3], rate=1, activation_fn=None)
-    prob = tf.transpose(prob, [0, 3, 1, 2])
-
-    prob = tf.reshape(prob, [-1, modules, vh * vw])
-    prob = tf.nn.softmax(prob)
-    ranx, rany = meshgrid(vh)
-
-    prob = tf.reshape(prob, [-1, 2, vh, vw])
-
-    sx = tf.reduce_sum(prob * ranx, axis=[2, 3])
-    sy = tf.reduce_sum(prob * rany, axis=[2, 3])  # -> batch x modules
-
-    out_xy = tf.reshape(tf.stack([sx, sy], -1), [-1, modules, 2])
-
-  return out_xy
 
 def translation_network(net, is_training):
   """Constructs a network that infers the relative translation of image pairs.
@@ -632,31 +567,14 @@ def keypoint_network_test(rgba,
   images = rgba[:, :, :, :3]
   
   # [batch, 1]
-#  orient = orientation_network(images, num_filters * 0.5, is_training)
-##  orient=tf.Print(orient, [orient,tf.shape(orient)], "orient: ",summarize=1000) 
-##  lr_gt=tf.Print(lr_gt, [lr_gt,tf.shape(lr_gt)], "lr_gt: ",summarize=1000) 
-#  # [batch, 1]
-#  lr_estimated = tf.maximum(0.0, tf.sign(orient[:, 0, :1] - orient[:, 1, :1]))
-#  if lr_gt is None:
-#    lr = lr_estimated
-#  else:
-#    lr_gt = tf.maximum(0.0, tf.sign(lr_gt[:, :1]))
-#    lr = tf.round(lr_gt * anneal + lr_estimated * (1 - anneal))
-#
-#  lrtiled = tf.tile(
-#      tf.expand_dims(tf.expand_dims(lr, 1), 1),
-#      [1, images.shape[1], images.shape[2], 1])
 
-#  images = tf.concat([images, lrtiled], axis=3)
-
-#  mask = rgba[:, :, :, 3]
   mask = mask_m
   mask = tf.cast(tf.greater(mask, tf.zeros_like(mask)), dtype=tf.float32)
   
   is_training=False
   net = dilated_cnn(images, num_filters, is_training)
   Translation=translation_network(net,is_training)
-#  net=tf.Print(net, [net,tf.shape(net)], "net: ",summarize=1000)
+
   # The probability distribution map.
   prob = slim.conv2d(
       net, num_kp, [3, 3], rate=1, scope="conv_xy", activation_fn=None)
@@ -962,19 +880,18 @@ def _default_hparams():
 
   hparams = tf.contrib.training.HParams(
       num_filters=64,  # Number of filters.
-      num_kp=10,  # Numer of keypoints. default 10
+      num_kp=10,  # Numer of keypoints. 
 
-      loss_pose=1.0,  # Pose Loss. default 0.2 9.13修改
+      loss_pose=1.0,  # Pose Loss. 
       loss_trans=1.0,
       loss_transformation=1.0,
       loss_con=1.0,  # Multiview consistency Loss.
-      loss_sep=10.0,  # Seperation Loss. default 1.0 5.12修改
-      loss_sill=1.0,  # Sillhouette Loss.default 1.0
-      loss_lr=0.0,  # Orientation Loss.
-      loss_variance=0.5,  # Variance Loss (part of Sillhouette loss). default 0.5
+      loss_sep=1.0,  # Seperation Loss. 
+      loss_sill=1.0,  # Sillhouette Loss.
+      loss_variance=0.5,  # Variance Loss (part of Sillhouette loss).
 
-      sep_delta=0.0005,  # Seperation threshold. default 0.05. 9.27修改
-      noise=0.1,  # Noise added during estimating rotation. default 0.1. 9.9修改
+      sep_delta=0.0005,  # Seperation threshold. 
+      noise=0.1,  # Noise added during estimating rotation. 
 
       learning_rate=1.0e-4, #default=1.0e-3
       lr_anneal_start=30000,  # When to anneal in the orientation prediction.
